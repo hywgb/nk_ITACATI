@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import JsSIP from 'jssip'
 
@@ -12,6 +12,12 @@ const App: React.FC = () => {
   const [registered, setRegistered] = useState(false)
   const [inCall, setInCall] = useState(false)
 
+  // ICE servers 配置
+  const [stun, setStun] = useState('stun:stun.l.google.com:19302')
+  const [turn, setTurn] = useState('') // 例：turn:turn.example.com:3478?transport=tcp
+  const [turnUser, setTurnUser] = useState('')
+  const [turnPass, setTurnPass] = useState('')
+
   const uaRef = useRef<any>(null)
   const sessionRef = useRef<any>(null)
   const remoteAudioRef = useRef<HTMLAudioElement>(null)
@@ -22,17 +28,24 @@ const App: React.FC = () => {
     }
   }, [])
 
+  const buildIceServers = () => {
+    const arr: any[] = []
+    if (stun) arr.push({ urls: stun })
+    if (turn) arr.push({ urls: turn, username: turnUser || undefined, credential: turnPass || undefined })
+    return arr
+  }
+
   const startUA = () => {
     if (!wsUri || !sipUri || !authUser || !password) return
 
     const socket = new JsSIP.WebSocketInterface(wsUri)
-    const configuration = {
+    const configuration: any = {
       sockets: [socket],
       uri: sipUri,
       authorization_user: authUser,
       password,
       session_timers: false
-    } as any
+    }
 
     const ua = new JsSIP.UA(configuration)
     ua.on('connected', () => setStatus('ws connected'))
@@ -71,6 +84,7 @@ const App: React.FC = () => {
     if (!uaRef.current) return
     const options: any = {
       mediaConstraints: { audio: true, video: false },
+      pcConfig: { iceServers: buildIceServers() },
       rtcOfferConstraints: {
         offerToReceiveAudio: 1,
         offerToReceiveVideo: 0
@@ -83,7 +97,7 @@ const App: React.FC = () => {
   const sendDTMF = (tone: string) => sessionRef.current?.sendDTMF(tone)
 
   return (
-    <div style={{ fontFamily: 'sans-serif', maxWidth: 800, margin: '20px auto' }}>
+    <div style={{ fontFamily: 'sans-serif', maxWidth: 900, margin: '20px auto' }}>
       <h2>ITACATI Web Client (React + JsSIP)</h2>
       <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: 8 }}>
         <label>WSS URI</label>
@@ -94,6 +108,14 @@ const App: React.FC = () => {
         <input value={authUser} onChange={e => setAuthUser(e.target.value)} />
         <label>Password</label>
         <input type="password" value={password} onChange={e => setPassword(e.target.value)} />
+        <label>STUN</label>
+        <input value={stun} onChange={e => setStun(e.target.value)} placeholder="stun:stun.l.google.com:19302" />
+        <label>TURN</label>
+        <input value={turn} onChange={e => setTurn(e.target.value)} placeholder="turn:turn.example.com:3478?transport=tcp" />
+        <label>TURN User</label>
+        <input value={turnUser} onChange={e => setTurnUser(e.target.value)} />
+        <label>TURN Pass</label>
+        <input type="password" value={turnPass} onChange={e => setTurnPass(e.target.value)} />
       </div>
       <div style={{ marginTop: 10 }}>
         <button onClick={startUA}>Init</button>
@@ -113,7 +135,7 @@ const App: React.FC = () => {
       <div style={{ marginTop: 10 }}>Status: <b>{status}</b></div>
       <audio ref={remoteAudioRef} autoPlay />
       <p style={{ fontSize: 12, color: '#666' }}>
-        Note: Requires a SIP proxy that supports SIP over WebSocket (RFC 7118), e.g., Kamailio with `websocket` module.
+        说明：需要支持 RFC 7118 的 SIP 网关（如 Kamailio websocket）。可配置 STUN/TURN，提高 NAT 场景下建链成功率。
       </p>
     </div>
   )

@@ -2,12 +2,20 @@
 #include <iostream>
 #include <memory>
 #include <cstdlib>
+#include <algorithm>
 
 using namespace pj;
 
 static std::string getenvOr(const char* k, const char* defv) {
   const char* v = std::getenv(k);
   return v ? std::string(v) : std::string(defv);
+}
+
+static bool getenvBool(const char* k, bool defv=false) {
+  std::string v = getenvOr(k, defv ? "1" : "");
+  if (v.empty()) return false;
+  std::string s = v; std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+  return (s=="1"||s=="true"||s=="yes"||s=="on");
 }
 
 struct MyAccount : public Account {
@@ -33,7 +41,31 @@ int main() {
     epcfg.uaConfig.maxCalls = 16;
     epcfg.logConfig.level = 4;
     epcfg.logConfig.consoleLevel = 4;
-    epcfg.medConfig.sndAutoCloseTime = 0;
+
+    // 媒体与NAT配置（ICE/TURN/SRTP/VAD）
+    bool iceOn = getenvBool("ITACATI_ICE", true);
+    bool vadOff = getenvBool("ITACATI_NO_VAD", false);
+    std::string srtpMode = getenvOr("ITACATI_SRTP", "optional"); // disabled/optional/mandatory
+    std::string turnUrl = getenvOr("ITACATI_TURN_URL", "");     // e.g. turn:turn.example.com:3478?transport=tcp
+    std::string turnUser = getenvOr("ITACATI_TURN_USER", "");
+    std::string turnPass = getenvOr("ITACATI_TURN_PASS", "");
+    std::string turnConn = getenvOr("ITACATI_TURN_CONN", "tcp"); // udp/tcp/tls
+
+    epcfg.medConfig.noVad = vadOff;
+    epcfg.medConfig.iceEnabled = iceOn;
+
+    if (!turnUrl.empty()) {
+      epcfg.medConfig.turnEnabled = true;
+      epcfg.medConfig.turnServer = turnUrl;
+      epcfg.medConfig.turnConnType = (turnConn=="tls" ? pjsua_turn_conn_type::PJSUA_TURN_TPT_TLS : (turnConn=="tcp" ? pjsua_turn_conn_type::PJSUA_TURN_TPT_TCP : pjsua_turn_conn_type::PJSUA_TURN_TPT_UDP));
+      if (!turnUser.empty()) epcfg.medConfig.turnUserName = turnUser;
+      if (!turnPass.empty()) epcfg.medConfig.turnPassword = turnPass;
+    }
+
+    if (srtpMode=="disabled") epcfg.medConfig.srtpUse = 0; // SRTP_DISABLED
+    else if (srtpMode=="mandatory") epcfg.medConfig.srtpUse = 2; // SRTP_MANDATORY
+    else epcfg.medConfig.srtpUse = 1; // SRTP_OPTIONAL
+
     ep.libInit(epcfg);
 
     // Transports
@@ -50,7 +82,7 @@ int main() {
     }
 
     ep.libStart();
-    std::cout << "PJSUA2 started." << std::endl;
+    std::cout << "PJSUA2 started. ICE=" << iceOn << ", SRTP=" << srtpMode << ", TURN=" << (!turnUrl.empty()) << std::endl;
 
     // Account（可选注册）
     std::string sipUser = getenvOr("ITACATI_SIP_USER", "");
