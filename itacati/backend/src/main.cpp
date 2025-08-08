@@ -3,6 +3,8 @@
 #include <memory>
 #include <cstdlib>
 #include <algorithm>
+#include <thread>
+#include <chrono>
 
 using namespace pj;
 
@@ -29,6 +31,27 @@ struct MyAccount : public Account {
     ans.statusCode = (pjsip_status_code)200;
     try { call->answer(ans); } catch(...) { }
     delete call;
+  }
+};
+
+struct MyCall : public Call {
+  using Call::Call;
+  void onCallState(OnCallStateParam &prm) override {
+    PJ_UNUSED_ARG(prm);
+    CallInfo ci = getInfo();
+    std::cout << "[Call] state=" << ci.stateText << ", lastCode=" << ci.lastStatusCode << "(" << ci.lastReason << ")" << std::endl;
+    if (ci.state == PJSIP_INV_STATE_DISCONNECTED) {
+      std::cout << "[Call] disconnected." << std::endl;
+    }
+  }
+  void onCallMediaState(OnCallMediaStateParam &prm) override {
+    PJ_UNUSED_ARG(prm);
+    CallInfo ci = getInfo();
+    for (unsigned i=0; i<ci.media.size(); ++i) {
+      if (ci.media[i].type == PJMEDIA_TYPE_AUDIO && ci.media[i].status == PJSUA_CALL_MEDIA_ACTIVE) {
+        std::cout << "[Call] audio active." << std::endl;
+      }
+    }
   }
 };
 
@@ -105,9 +128,25 @@ int main() {
       acc->create(accCfg);
     }
 
+    // 出局呼叫（按需）
+    std::string dial = getenvOr("ITACATI_DIAL", "");
+    std::unique_ptr<MyCall> outCall;
+    if (!dial.empty() && acc) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(800)); // 等待注册
+      try {
+        outCall = std::make_unique<MyCall>(*acc.get());
+        CallOpParam prm(true); // 生成 SDP
+        outCall->makeCall(dial, prm);
+        std::cout << "[Dial] calling " << dial << std::endl;
+      } catch (Error &e) {
+        std::cerr << "[Dial] error: " << e.info() << std::endl;
+      }
+    }
+
     std::cout << "Running. Press ENTER to quit." << std::endl;
     std::string line; std::getline(std::cin, line);
 
+    if (outCall) { try { CallOpParam bye; outCall->hangup(bye); } catch(...) {} outCall.reset(); }
     if (acc) { acc->shutdown(); acc.reset(); }
     ep.libDestroy();
     std::cout << "Stopped." << std::endl;
