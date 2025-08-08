@@ -1,0 +1,31 @@
+version: "3.9"
+services:
+  coturn:
+    image: coturn/coturn:latest
+    container_name: itacati-coturn
+    volumes:
+      - ./deploy/coturn-basic.conf:/etc/coturn/turnserver.conf:ro
+    network_mode: host
+    restart: unless-stopped
+
+  core:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: itacati-core
+    environment:
+      - ITACATI_SIP_PORT=5060
+      - ITACATI_SIP_TCP_PORT=5060
+      # - ITACATI_SIP_TLS=1
+      # - ITACATI_SIP_TLS_PORT=5061
+      - ITACATI_ICE=1
+      - ITACATI_SRTP=optional
+      - ITACATI_NO_VAD=0
+      # 示例 TURN（与上方 coturn 一致，凭据在 coturn-basic.conf）
+      - ITACATI_TURN_URL=turn:127.0.0.1:3478?transport=tcp
+      - ITACATI_TURN_USER=test
+      - ITACATI_TURN_PASS=changeMe123
+    network_mode: host
+    depends_on:
+      - coturn
+    restart: unless-stopped
