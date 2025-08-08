@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <thread>
 #include <chrono>
+#include <mutex>
+#include <fstream>
+#include <vector>
 
 using namespace pj;
 
@@ -20,28 +23,38 @@ static bool getenvBool(const char* k, bool defv=false) {
   return (s=="1"||s=="true"||s=="yes"||s=="on");
 }
 
-struct MyAccount : public Account {
-  void onRegState(OnRegStateParam &prm) override {
-    std::cout << "[Account] onRegState: code=" << prm.code << ", reason=" << prm.reason << std::endl;
-  }
-  void onIncomingCall(OnIncomingCallParam &prm) override {
-    std::cout << "[Account] Incoming call, auto-answer 200" << std::endl;
-    Call *call = new Call(*this, prm.callId);
-    CallOpParam ans;
-    ans.statusCode = (pjsip_status_code)200;
-    try { call->answer(ans); } catch(...) { }
-    delete call;
+// 简单 CDR 记录器（CSV）
+struct CdrWriter {
+  std::mutex mtx;
+  std::ofstream ofs;
+  CdrWriter(const std::string& path) { ofs.open(path, std::ios::app); if (ofs.tellp()==0) ofs << "call_id,dir,from,to,start_ts,answer_ts,end_ts,last_code,last_reason\n"; }
+  void write(const std::string& callId, const std::string& dir, const std::string& from, const std::string& to,
+             long long startTs, long long answerTs, long long endTs, int lastCode, const std::string& lastReason) {
+    std::lock_guard<std::mutex> lk(mtx);
+    ofs << callId << "," << dir << "," << from << "," << to << "," << startTs << "," << answerTs << "," << endTs
+        << "," << lastCode << "," << '"' << lastReason << '"' << "\n";
+    ofs.flush();
   }
 };
 
+static std::unique_ptr<CdrWriter> gCdr;
+static long long nowMs(){ using namespace std::chrono; return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count(); }
+
 struct MyCall : public Call {
   using Call::Call;
+  std::string dir = "out"; // out/in
+  long long tsStart = 0, tsAnswer = 0, tsEnd = 0;
   void onCallState(OnCallStateParam &prm) override {
     PJ_UNUSED_ARG(prm);
     CallInfo ci = getInfo();
-    std::cout << "[Call] state=" << ci.stateText << ", lastCode=" << ci.lastStatusCode << "(" << ci.lastReason << ")" << std::endl;
+    if (tsStart==0) tsStart = nowMs();
+    if (ci.state == PJSIP_INV_STATE_CONFIRMED && tsAnswer==0) tsAnswer = nowMs();
     if (ci.state == PJSIP_INV_STATE_DISCONNECTED) {
-      std::cout << "[Call] disconnected." << std::endl;
+      tsEnd = nowMs();
+      if (gCdr) gCdr->write(ci.callIdString, dir, ci.remoteUri, ci.localUri, tsStart, tsAnswer, tsEnd, (int)ci.lastStatusCode, ci.lastReason);
+      std::cout << "[Call] disconnected. CDR written." << std::endl;
+    } else {
+      std::cout << "[Call] state=" << ci.stateText << ", lastCode=" << ci.lastStatusCode << "(" << ci.lastReason << ")" << std::endl;
     }
   }
   void onCallMediaState(OnCallMediaStateParam &prm) override {
@@ -52,6 +65,24 @@ struct MyCall : public Call {
         std::cout << "[Call] audio active." << std::endl;
       }
     }
+  }
+};
+
+struct MyAccount : public Account {
+  std::vector<std::unique_ptr<MyCall>> calls;
+  bool autoAnswer = true;
+  void onRegState(OnRegStateParam &prm) override {
+    std::cout << "[Account] onRegState: code=" << prm.code << ", reason=" << prm.reason << std::endl;
+  }
+  void onIncomingCall(OnIncomingCallParam &prm) override {
+    std::cout << "[Account] Incoming call" << std::endl;
+    auto mc = std::make_unique<MyCall>(*this, prm.callId);
+    mc->dir = "in";
+    if (autoAnswer) {
+      CallOpParam ans; ans.statusCode = (pjsip_status_code)200;
+      try { mc->answer(ans); } catch(...) {}
+    }
+    calls.emplace_back(std::move(mc));
   }
 };
 
@@ -104,6 +135,10 @@ int main() {
       try { ep.transportCreate(PJSIP_TRANSPORT_TLS, tcfgTls); } catch(...) {}
     }
 
+    // CDR
+    std::string cdrPath = getenvOr("ITACATI_CDR_PATH", "cdr.csv");
+    gCdr = std::make_unique<CdrWriter>(cdrPath);
+
     ep.libStart();
     std::cout << "PJSUA2 started. ICE=" << iceOn << ", SRTP=" << srtpMode << ", TURN=" << (!turnUrl.empty()) << std::endl;
 
@@ -125,6 +160,7 @@ int main() {
       accCfg.regConfig.registrarUri = "sip:" + sipDomain;
 
       acc = std::make_unique<MyAccount>();
+      acc->autoAnswer = getenvBool("ITACATI_AUTO_ANSWER", true);
       acc->create(accCfg);
     }
 
@@ -135,6 +171,8 @@ int main() {
       std::this_thread::sleep_for(std::chrono::milliseconds(800)); // 等待注册
       try {
         outCall = std::make_unique<MyCall>(*acc.get());
+        outCall->dir = "out";
+        outCall->tsStart = nowMs();
         CallOpParam prm(true); // 生成 SDP
         outCall->makeCall(dial, prm);
         std::cout << "[Dial] calling " << dial << std::endl;

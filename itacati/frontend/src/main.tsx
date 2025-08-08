@@ -11,10 +11,11 @@ const App: React.FC = () => {
   const [status, setStatus] = useState<string>('idle')
   const [registered, setRegistered] = useState(false)
   const [inCall, setInCall] = useState(false)
+  const [muted, setMuted] = useState(false)
 
   // ICE servers 配置
   const [stun, setStun] = useState('stun:stun.l.google.com:19302')
-  const [turn, setTurn] = useState('') // 例：turn:turn.example.com:3478?transport=tcp
+  const [turn, setTurn] = useState('')
   const [turnUser, setTurnUser] = useState('')
   const [turnPass, setTurnPass] = useState('')
 
@@ -69,8 +70,8 @@ const App: React.FC = () => {
 
       session.on('progress', () => setStatus('progress'))
       session.on('accepted', () => { setInCall(true); setStatus('in call') })
-      session.on('failed', (ev: any) => { setInCall(false); setStatus(`failed: ${ev.cause}`) })
-      session.on('ended', () => { setInCall(false); setStatus('ended') })
+      session.on('failed', (ev: any) => { setInCall(false); setStatus(`failed: ${ev.cause}`); setMuted(false) })
+      session.on('ended', () => { setInCall(false); setStatus('ended'); setMuted(false) })
     })
 
     ua.start()
@@ -93,8 +94,18 @@ const App: React.FC = () => {
     uaRef.current.call(dst, options)
   }
 
-  const hangup = () => sessionRef.current?.terminate()
+  const hangup = () => { sessionRef.current?.terminate(); setMuted(false) }
   const sendDTMF = (tone: string) => sessionRef.current?.sendDTMF(tone)
+  const toggleMute = () => {
+    if (!sessionRef.current || !inCall) return
+    if (!muted) {
+      sessionRef.current.mute({ audio: true })
+      setMuted(true)
+    } else {
+      sessionRef.current.unmute({ audio: true })
+      setMuted(false)
+    }
+  }
 
   return (
     <div style={{ fontFamily: 'sans-serif', maxWidth: 900, margin: '20px auto' }}>
@@ -130,6 +141,7 @@ const App: React.FC = () => {
         <button onClick={call} disabled={!registered || inCall}>Call</button>
         <button onClick={hangup} disabled={!inCall}>Hangup</button>
         <button onClick={() => sendDTMF('1')} disabled={!inCall}>DTMF 1</button>
+        <button onClick={toggleMute} disabled={!inCall}>{muted ? 'Unmute' : 'Mute'}</button>
       </div>
 
       <div style={{ marginTop: 10 }}>Status: <b>{status}</b></div>
